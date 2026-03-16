@@ -1,0 +1,144 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev', 'prod'],
+            description: 'Select the Terraform environment to deploy'
+        )
+        choice(
+            name: 'ACTION',
+            choices: ['apply', 'destroy'],
+            description: 'Select Terraform action'
+        )
+    }
+
+    environment {
+        TF_IN_AUTOMATION   = "true"
+        AWS_DEFAULT_REGION = "us-east-1"
+        TF_ROOT            = "environments/${params.ENVIRONMENT}"
+    }
+
+    stages {
+        stage('Clean Workspace Before Build') {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/sumanthrao04/terraform-aws-networking-modules-jenkins.git'
+            }
+        }
+
+        stage('Terraform Version') {
+            steps {
+                sh 'terraform version'
+            }
+        }
+
+        stage('AWS Identity Check') {
+            steps {
+                sh 'aws sts get-caller-identity'
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                dir("${env.TF_ROOT}") {
+                    sh 'terraform init'
+                }
+            }
+        }
+
+        stage('Terraform Format Check') {
+            steps {
+                sh 'terraform fmt -check -recursive'
+            }
+        }
+
+        stage('Terraform Validate') {
+            steps {
+                dir("${env.TF_ROOT}") {
+                    sh 'terraform validate'
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                dir("${env.TF_ROOT}") {
+                    sh 'terraform plan -out=tfplan'
+                }
+            }
+        }
+
+        stage('Manual Approval for Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                input message: "Approve Terraform apply for ${params.ENVIRONMENT}?", ok: 'Apply'
+            }
+        }
+
+        stage('Terraform Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                dir("${env.TF_ROOT}") {
+                    sh 'terraform apply -auto-approve tfplan'
+                }
+            }
+        }
+
+        stage('Terraform Destroy Plan') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                dir("${env.TF_ROOT}") {
+                    sh 'terraform plan -destroy -out=destroy.tfplan'
+                }
+            }
+        }
+
+        stage('Manual Approval for Destroy') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                input message: "Approve Terraform destroy for ${params.ENVIRONMENT}?", ok: 'Destroy'
+            }
+        }
+
+        stage('Terraform Destroy') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                dir("${env.TF_ROOT}") {
+                    sh 'terraform apply -auto-approve destroy.tfplan'
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Terraform ${params.ACTION} completed successfully for ${params.ENVIRONMENT}."
+        }
+        failure {
+            echo "Terraform ${params.ACTION} failed for ${params.ENVIRONMENT}."
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
